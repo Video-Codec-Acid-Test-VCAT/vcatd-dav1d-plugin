@@ -1,0 +1,143 @@
+/*
+ * vcat-d (Video Codec Acid Test)
+ *
+ * SPDX-FileCopyrightText: Copyright (C) 2020-2025 vcat-d authors and RoncaTech
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+plugins {
+    id 'com.android.library'
+    id 'maven-publish'
+}
+
+group   = 'com.roncatech.vcat'
+version = '0.0.1'
+
+def dav1dAbis = ['arm64-v8a', 'armeabi-v7a']
+def minApi    = 29
+
+android {
+    namespace 'com.roncatech.vcatd_dav1d_decoder'
+    compileSdk 35
+    ndkVersion "27.0.12077973"
+
+    defaultConfig {
+        minSdk minApi
+        targetSdk 35
+        ndk { abiFilters.addAll(dav1dAbis) }
+
+        consumerProguardFiles 'consumer-rules.pro'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug { debuggable true }
+    }
+
+    externalNativeBuild { cmake { path file('src/main/cpp/CMakeLists.txt') } }
+
+    publishing {
+        singleVariant("release") { withSourcesJar() }
+    }
+}
+
+/* ===== dist: produce a ready-to-copy AAR with classes.dex injected ===== */
+
+tasks.register('dist') {
+    description 'Assembles release AAR, injects classes.dex via D8, copies to build/outputs/dist/'
+    group       'build'
+    dependsOn   'assembleRelease'
+
+    doLast {
+        def aarIn  = layout.buildDirectory.file('outputs/aar/vcatd-dav1d-plugin-release.aar').get().asFile
+        def aarOut = layout.buildDirectory.file('outputs/dist/vcatd-dav1d-plugin.aar').get().asFile
+        aarOut.parentFile.mkdirs()
+
+        // Locate d8 in the highest installed build-tools version
+        def btRoot   = new File("${android.sdkDirectory.absolutePath}/build-tools")
+        def btLatest = btRoot.listFiles().findAll { it.isDirectory() }
+                             .sort { a, b -> b.name <=> a.name }.first()
+        def onWindows = System.getProperty('os.name').toLowerCase().contains('windows')
+        def d8Exe    = new File(btLatest, onWindows ? 'd8.bat' : 'd8')
+
+        // Extract classes.jar from the AAR
+        def tmpDir     = layout.buildDirectory.dir('dist-tmp').get().asFile
+        tmpDir.mkdirs()
+        def classesJar = new File(tmpDir, 'classes.jar')
+        new java.util.zip.ZipFile(aarIn).withCloseable { zip ->
+            classesJar.bytes = zip.getInputStream(zip.getEntry('classes.jar')).bytes
+        }
+
+        // Run D8 to produce classes.dex
+        def dexDir = new File(tmpDir, 'dex')
+        dexDir.mkdirs()
+        exec {
+            commandLine d8Exe.absolutePath,
+                    '--output', dexDir.absolutePath,
+                    '--min-api', minApi.toString(),
+                    '--release',
+                    classesJar.absolutePath
+        }
+
+        // Repack: copy all AAR entries + inject classes.dex
+        def fos = new java.io.FileOutputStream(aarOut)
+        def zos = new java.util.zip.ZipOutputStream(fos)
+        new java.util.zip.ZipFile(aarIn).withCloseable { zip ->
+            zip.entries().each { entry ->
+                zos.putNextEntry(new java.util.zip.ZipEntry(entry.name))
+                if (!entry.isDirectory()) zos.write(zip.getInputStream(entry).bytes)
+                zos.closeEntry()
+            }
+        }
+        zos.putNextEntry(new java.util.zip.ZipEntry('classes.dex'))
+        zos.write(new File(dexDir, 'classes.dex').bytes)
+        zos.closeEntry()
+        zos.close()
+
+        logger.lifecycle("dist → ${aarOut.absolutePath}")
+    }
+}
+
+/* ===== Publishing ===== */
+
+tasks.register('androidJavadocJar', Jar) { archiveClassifier = 'javadoc' }
+
+afterEvaluate {
+    publishing {
+        publications {
+            release(MavenPublication) {
+                from components.release
+                artifact(tasks.named('androidJavadocJar'))
+
+                groupId    = project.group
+                artifactId = 'vcatd-dav1d-plugin'
+                version    = project.version
+
+                pom {
+                    name.set('VCAT dav1d decoder plugin')
+                    description.set('AV1 software decoder plugin for VCAT (dav1d)')
+                    licenses {
+                        license {
+                            name.set('GPL-3.0-or-later')
+                            url.set('https://www.gnu.org/licenses/gpl-3.0.html')
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    tasks.named('publishReleasePublicationToMavenLocal') {
+        dependsOn 'assembleRelease'
+    }
+}
+
+/* ===== Dependencies ===== */
+dependencies {
+    compileOnly 'com.roncatech.vcat:vcatd-decoder-plugin-api:1.0.1'
+    compileOnly 'com.google.android.exoplayer:exoplayer-core:2.19.1'
+    compileOnly 'androidx.annotation:annotation:1.7.1'
+}
