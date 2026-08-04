@@ -38,13 +38,17 @@ import android.os.Handler;
 import com.google.android.exoplayer2.Renderer;
 import com.google.android.exoplayer2.decoder.DecoderException;
 import com.google.android.exoplayer2.video.VideoRendererEventListener;
-import com.roncatech.vcat.decoder_plugin_api.VcatDecoderPlugin;
+import com.roncatech.vcat.decoder_plugin_api.ContainerParser;
+import com.roncatech.vcat.decoder_plugin_api.VcatDecoder;
+
+import java.util.Collections;
+import java.util.List;
 
 /**
- * VCAT AV1 plugin backed by dav1d.
- * ID: vcat-dav1d
+ * vcat-d AV1 decoder plugin backed by dav1d, on the {@link VcatDecoder} SPI.
+ * ID: vcat.dav1d, MIME video/av01.
  */
-public final class VcatDav1dPlugin implements VcatDecoderPlugin {
+public final class VcatDav1dPlugin implements VcatDecoder {
 
     @Override
     public String getId() {
@@ -68,9 +72,10 @@ public final class VcatDav1dPlugin implements VcatDecoderPlugin {
     }
 
     @Override
-    public java.util.List<String> getSupportedProfiles() {
-        // You asked for lowercase "main"
-        return java.util.Collections.singletonList("main");
+    public List<ContainerParser> getSupportedContainerParsers() {
+        // AV1 in MP4 uses the standard av01 sample entry (handled by the host's MP4 extractor),
+        // so no custom container parser is advertised. IVF support comes in a later step.
+        return Collections.emptyList();
     }
 
     @Override
