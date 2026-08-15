@@ -137,7 +137,12 @@ afterEvaluate {
 
 /* ===== Dependencies ===== */
 dependencies {
-    compileOnly 'com.roncatech.vcat:vcatd-decoder-plugin-api:1.0.2'
+    compileOnly 'com.roncatech.vcat:vcatd-decoder-plugin-api:1.0.4'
     compileOnly 'com.google.android.exoplayer:exoplayer-core:2.19.1'
     compileOnly 'androidx.annotation:annotation:1.7.1'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'com.roncatech.vcat:vcatd-decoder-plugin-api:1.0.4'
+    testImplementation 'com.google.android.exoplayer:exoplayer-core:2.19.1'
+    testImplementation 'com.google.android.exoplayer:exoplayer-testutils:2.19.1'
 }

@@ -4,6 +4,24 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
 
 ---
 
+## 2026-08-14 — AV1 IVF parsing (`Av1IvfParser`)
+
+- **`Av1IvfParser`** implements **`IvfParserExtension`** (api `1.0.4`): `ivfFourCc()` = `"AV01"`;
+  `parseHeader()` peeks the first frame, skips the OBU temporal delimiter, and parses the AV1
+  **sequence-header OBU** (from-scratch OBU walker + MSB-first bit-reader + LEB128) for
+  width/height/color; sets `VideoConfiguration` + `initializationData` (the seq-header OBU).
+  Peek-only (does not consume past the sequence header).
+- `VcatDav1dPlugin.getSupportedContainerParsers()` → `[ivfParser]` (stays on `VcatDecoder`; no
+  MP4 parser — AV1-in-MP4 uses the standard `av01` path).
+- api dep `1.0.2 → 1.0.4`; added test deps (`exoplayer-testutils`).
+- **Validated against a real AV1 IVF asset** (`av1_360x640_5s.ivf`, in `src/test/resources`):
+  width 360 / height 640, BT.709 limited-range SDR, init data = seq-header OBU, peek-only read.
+  **5/5 tests.**
+- **NOTE: parsing only** — end-to-end IVF *playback* is deferred (dav1d renderer IVF sample
+  delivery not yet wired).
+
+---
+
 ## 2026-08-04 — Migrate to the `VcatDecoder` SPI
 
 - `VcatDav1dPlugin` now implements the non-deprecated **`VcatDecoder`** SPI (was

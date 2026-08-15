@@ -50,6 +50,8 @@ import java.util.List;
  */
 public final class VcatDav1dPlugin implements VcatDecoder {
 
+    private final Av1IvfParser ivfParser = new Av1IvfParser();
+
     @Override
     public String getId() {
         return "vcat.dav1d";
@@ -73,9 +75,9 @@ public final class VcatDav1dPlugin implements VcatDecoder {
 
     @Override
     public List<ContainerParser> getSupportedContainerParsers() {
-        // AV1 in MP4 uses the standard av01 sample entry (handled by the host's MP4 extractor),
-        // so no custom container parser is advertised. IVF support comes in a later step.
-        return Collections.emptyList();
+        // AV1-in-MP4 uses the standard av01 sample entry (host's MP4 extractor + this renderer),
+        // so no MP4 parser is advertised. IVF is handled by Av1IvfParser.
+        return Collections.singletonList(ivfParser);
     }
 
     @Override
