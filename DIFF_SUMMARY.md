@@ -4,6 +4,18 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
 
 ---
 
+## 2026-08-15 — AV1-from-IVF confirmed operational end-to-end
+
+- **IVF playback now works end-to-end on-device.** Up to and including the 2026-08-14 work below,
+  IVF was **not operational** — only the container framing and AV1 sequence-header parsing were
+  implemented and unit-validated, and playback was expected to need further renderer wiring.
+- On 2026-08-15, once the host side (`VcatIvfExtractor` + IVF-selectable playlist picker) was in
+  place, AV1-from-IVF played back end-to-end through the existing `Dav1dVideoRenderer` with **no
+  plugin/renderer changes** — the dav1d renderer accepts IVF-delivered frames as-is.
+- Doc-only entry; supersedes the "parsing only / playback deferred" note on the 2026-08-14 entry.
+
+---
+
 ## 2026-08-14 — AV1 IVF parsing (`Av1IvfParser`)
 
 - **`Av1IvfParser`** implements **`IvfParserExtension`** (api `1.0.4`): `ivfFourCc()` = `"AV01"`;
@@ -21,8 +33,9 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
   importable here) and asserts the full field table against the fixture: `DKIF`/`AV01`, timebase
   15360/1, 150 frames, frame 0 @44 (pts 0), frame 1 payload @6868 (pts 33333µs @ 30fps), and the
   parsed `VideoConfiguration` (360×640, BT.709 limited, seq-header OBU init data at offset 2).
-- **NOTE: parsing only** — end-to-end IVF *playback* is deferred (dav1d renderer IVF sample
-  delivery not yet wired).
+- **As of this entry: parsing only** — IVF was not yet operational; end-to-end *playback* was
+  expected to need further renderer wiring. _(Resolved 2026-08-15: playback works end-to-end with
+  no renderer changes — see the entry above.)_
 
 ---
 
