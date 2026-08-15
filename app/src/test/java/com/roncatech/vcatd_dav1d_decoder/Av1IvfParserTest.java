@@ -29,6 +29,7 @@ import static org.junit.Assert.assertTrue;
 
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.testutil.FakeExtractorInput;
+import com.google.android.exoplayer2.util.MimeTypes;
 import com.google.android.exoplayer2.util.Util;
 import com.roncatech.vcat.decoder_plugin_api.VideoConfiguration;
 
@@ -110,6 +111,12 @@ public class Av1IvfParserTest {
         assertTrue(csd.length > 2);
         assertEquals("first byte of init data must be the sequence header OBU header (0x0a)",
                 0x0a, csd[0] & 0xFF);
+    }
+
+    @Test
+    public void parseHeader_mimeTypeIsAv1() throws Exception {
+        VideoConfiguration cfg = parse(firstFramePayload());
+        assertEquals(MimeTypes.VIDEO_AV1, cfg.mimeType);
     }
 
     @Test

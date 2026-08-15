@@ -16,7 +16,11 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
 - api dep `1.0.2 → 1.0.4`; added test deps (`exoplayer-testutils`).
 - **Validated against a real AV1 IVF asset** (`av1_360x640_5s.ivf`, in `src/test/resources`):
   width 360 / height 640, BT.709 limited-range SDR, init data = seq-header OBU, peek-only read.
-  **5/5 tests.**
+  **`Av1IvfParserTest` (6) + `Av1IvfIntegrationTest` (3) = 9/9 tests.** The integration test
+  reproduces the IVF framing/timebase math (`VcatIvfExtractor` lives in the host repo and isn't
+  importable here) and asserts the full field table against the fixture: `DKIF`/`AV01`, timebase
+  15360/1, 150 frames, frame 0 @44 (pts 0), frame 1 payload @6868 (pts 33333µs @ 30fps), and the
+  parsed `VideoConfiguration` (360×640, BT.709 limited, seq-header OBU init data at offset 2).
 - **NOTE: parsing only** — end-to-end IVF *playback* is deferred (dav1d renderer IVF sample
   delivery not yet wired).
 
