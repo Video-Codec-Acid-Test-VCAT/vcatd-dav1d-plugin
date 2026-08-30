@@ -26,6 +26,13 @@ android {
         targetSdk 35
         ndk { abiFilters.addAll(dav1dAbis) }
 
+        externalNativeBuild {
+            cmake {
+                arguments "-DDAV1D_INSTALL_ARM64_V8A=${layout.buildDirectory.dir('dav1d/install-arm64-v8a').get().asFile.absolutePath}",
+                          "-DDAV1D_INSTALL_ARMEABI_V7A=${layout.buildDirectory.dir('dav1d/install-armeabi-v7a').get().asFile.absolutePath}"
+            }
+        }
+
         consumerProguardFiles 'consumer-rules.pro'
     }
 
@@ -42,6 +49,122 @@ android {
     publishing {
         singleVariant("release") { withSourcesJar() }
     }
+}
+
+/* ===== dav1d build (meson/ninja) =====
+ *
+ * dav1d is built from source into build/dav1d/ rather than carried as a committed prebuilt .a:
+ * a binary in git is permanent and grows the repo on every bump, and the source pin below records
+ * exactly what shipped. Mirrors the vvdec and dav2d plugins; dav1d uses meson (not CMake), so a
+ * cross file is generated per ABI from the NDK toolchain.
+ *
+ * Host prerequisites beyond the NDK: meson and ninja.
+ *
+ * Override the pin or source with -Pdav1dRef=<ref>, -Pdav1dRemote=<url>, or point at a local
+ * checkout with -PDAV1D_SRC=<path> / DAV1D_SRC=<path>.
+ */
+
+def dav1dWorkRoot = layout.buildDirectory.dir('dav1d').get().asFile
+def dav1dSrcDir   = new File(dav1dWorkRoot, 'src')
+
+// 1.5.3, not the newer 1.5.4: this is the release whose public headers match the prebuilt this
+// plugin previously shipped, so decoder behavior is unchanged by the switch to building from
+// source. VCAT measures decoder performance, so a dav1d bump should be a deliberate act — pass
+// -Pdav1dRef=1.5.4 to take it. (The only public-header delta between the two is an OS/2
+// dllexport branch, irrelevant to Android.)
+def dav1dRef    = (findProperty('dav1dRef')    ?: '1.5.3') as String
+def dav1dRemote = (findProperty('dav1dRemote') ?: 'https://code.videolan.org/videolan/dav1d.git') as String
+def dav1dLocal  = (findProperty('DAV1D_SRC')   ?: System.getenv('DAV1D_SRC')) as String
+
+// Meson cpu_family/cpu and NDK clang triple per ABI.
+def dav1dAbiInfo = [
+        'arm64-v8a'  : ['aarch64', 'aarch64', 'aarch64-linux-android'],
+        'armeabi-v7a': ['arm',     'armv7a',  'armv7a-linux-androideabi'],
+]
+
+tasks.register('fetchDav1d') {
+    outputs.dir(dav1dSrcDir)
+    doLast {
+        dav1dWorkRoot.mkdirs()
+
+        if (dav1dLocal) {
+            delete dav1dSrcDir
+            copy { from dav1dLocal; into dav1dSrcDir; exclude '.git' }
+            return
+        }
+        def clearGitEnv = { s -> s.environment.remove('GIT_DIR'); s.environment.remove('GIT_WORK_TREE') }
+
+        if (!dav1dSrcDir.exists() || !new File(dav1dSrcDir, '.git').exists()) {
+            delete dav1dSrcDir
+            exec { workingDir dav1dWorkRoot; clearGitEnv(delegate)
+                commandLine 'git', 'clone', '--depth', '1', '--branch', dav1dRef, dav1dRemote, 'src' }
+        } else {
+            exec { workingDir dav1dSrcDir; clearGitEnv(delegate)
+                commandLine 'git', 'fetch', '--depth', '1', 'origin', dav1dRef }
+            exec { workingDir dav1dSrcDir; clearGitEnv(delegate)
+                commandLine 'git', 'checkout', '-f', dav1dRef }
+        }
+    }
+}
+
+dav1dAbis.each { abi ->
+    def buildDir   = new File(dav1dWorkRoot, "build-${abi}")
+    def installDir = new File(dav1dWorkRoot, "install-${abi}")
+    def crossFile  = new File(dav1dWorkRoot, "cross-${abi}.txt")
+
+    tasks.register("buildDav1d_${abi}") {
+        dependsOn 'fetchDav1d'
+        outputs.dir(installDir)
+        doLast {
+            // Wipe the meson build dir: it caches the cross config and source path.
+            delete buildDir
+            buildDir.mkdirs(); installDir.mkdirs()
+
+            def ndk = android.ndkDirectory?.absolutePath
+            if (!ndk) throw new GradleException("NDK not found. Ensure ndkVersion ${android.ndkVersion} is installed.")
+
+            // The NDK ships one prebuilt toolchain dir per host; pick whichever is present.
+            def tcRoot = new File("${ndk}/toolchains/llvm/prebuilt")
+            def tcBin  = tcRoot.listFiles()?.findResult { it.isDirectory() ? new File(it, 'bin') : null }
+            if (tcBin == null || !tcBin.exists()) {
+                throw new GradleException("NDK LLVM toolchain not found under ${tcRoot}")
+            }
+
+            def info = dav1dAbiInfo[abi]
+            if (info == null) throw new GradleException("No dav1d cross config for ABI '${abi}'")
+            def (cpuFamily, cpu, triple) = info
+
+            crossFile.text = """[binaries]
+c = '${new File(tcBin, "${triple}${minApi}-clang").absolutePath}'
+cpp = '${new File(tcBin, "${triple}${minApi}-clang++").absolutePath}'
+ar = '${new File(tcBin, 'llvm-ar').absolutePath}'
+strip = '${new File(tcBin, 'llvm-strip').absolutePath}'
+
+[host_machine]
+system = 'android'
+cpu_family = '${cpuFamily}'
+cpu = '${cpu}'
+endian = 'little'
+"""
+
+            exec {
+                workingDir dav1dWorkRoot
+                commandLine 'meson', 'setup', buildDir.absolutePath, dav1dSrcDir.absolutePath,
+                        "--cross-file=${crossFile.absolutePath}",
+                        '--buildtype=release',
+                        '--default-library=static',
+                        "--prefix=${installDir.absolutePath}",
+                        '-Denable_tools=false',
+                        '-Denable_tests=false'
+            }
+            exec { workingDir buildDir; commandLine 'ninja' }
+            exec { workingDir buildDir; commandLine 'ninja', 'install' }
+        }
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn dav1dAbis.collect { "buildDav1d_${it}" }
 }
 
 /* ===== dist: produce a ready-to-copy AAR with classes.dex injected ===== */

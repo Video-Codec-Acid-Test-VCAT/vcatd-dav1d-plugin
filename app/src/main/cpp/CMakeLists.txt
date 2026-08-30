@@ -32,18 +32,28 @@ if(NOT ANDROID)
 endif()
 
 # =========================
-# Bundled prebuilt dav1d (per-ABI)
-# app/src/main/cpp -> ../../.. = app ; third_party/dav1d holds include/ + lib/<abi>/
+# dav1d, built from source (per-ABI)
+# Gradle's buildDav1d_<abi> task clones the pinned dav1d and meson-installs it into
+# build/dav1d/install-<abi>, passing that path in as DAV1D_INSTALL_<ABI>. Nothing prebuilt is
+# carried in the repo.
 # =========================
-set(DAV1D_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/dav1d")
-set(DAV1D_INCLUDE_DIR "${DAV1D_ROOT}/include")
-set(DAV1D_STATIC      "${DAV1D_ROOT}/lib/${ANDROID_ABI}/libdav1d.a")
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    set(DAV1D_INSTALL_DIR "${DAV1D_INSTALL_ARM64_V8A}")
+elseif(ANDROID_ABI STREQUAL "armeabi-v7a")
+    set(DAV1D_INSTALL_DIR "${DAV1D_INSTALL_ARMEABI_V7A}")
+else()
+    message(FATAL_ERROR "No dav1d install dir configured for ABI '${ANDROID_ABI}'")
+endif()
+
+set(DAV1D_INCLUDE_DIR "${DAV1D_INSTALL_DIR}/include")
+set(DAV1D_STATIC      "${DAV1D_INSTALL_DIR}/lib/libdav1d.a")
 
 message(STATUS "ABI='${ANDROID_ABI}'")
+message(STATUS "  DAV1D_INSTALL_DIR='${DAV1D_INSTALL_DIR}'")
 message(STATUS "  DAV1D_STATIC='${DAV1D_STATIC}'")
 
 if(NOT EXISTS "${DAV1D_STATIC}")
-    message(FATAL_ERROR "Static dav1d not found: ${DAV1D_STATIC}")
+    message(FATAL_ERROR "Static dav1d not found: ${DAV1D_STATIC}. Run the Gradle build so buildDav1d_${ANDROID_ABI} produces it.")
 endif()
 
 # =========================

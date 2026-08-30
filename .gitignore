@@ -22,3 +22,8 @@ local.properties
 # Native build cache
 .cxx/
 **/.cxx/
+
+# Native dependencies are built from source into build/ — never committed.
+# Guard against a stray prebuilt being added back by `git add -A`.
+*.a
+*.so

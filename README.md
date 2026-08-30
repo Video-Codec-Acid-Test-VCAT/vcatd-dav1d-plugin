@@ -9,9 +9,20 @@ plugin, loaded dynamically by the VCAT app at runtime. Declares MIME type `video
 
 - JDK 17+
 - Android SDK with NDK **27.0.12077973** and CMake 3.22+
+- **meson** and **ninja** (dav1d's build system)
 
-dav1d is linked from prebuilt static libraries bundled in `app/third_party/dav1d/`
-(`lib/arm64-v8a/libdav1d.a`, `lib/armeabi-v7a/libdav1d.a`) plus its public headers.
+dav1d is **built from source**, not bundled: the Gradle build clones it at a pinned release into
+`app/build/dav1d/src` and meson-installs a static `libdav1d.a` per ABI into
+`app/build/dav1d/install-<abi>/`. Nothing prebuilt is carried in the repo.
+
+The pin is **1.5.3** — the release matching the prebuilt this plugin previously shipped, so
+switching to a source build did not change decoder behavior. Since VCAT measures decoder
+performance, moving it is a deliberate act:
+
+```bash
+./gradlew :vcatd-dav1d-plugin:dist -Pdav1dRef=1.5.4
+./gradlew :vcatd-dav1d-plugin:dist -PDAV1D_SRC=/path/to/dav1d
+```
 
 ## Build
 

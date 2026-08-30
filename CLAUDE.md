@@ -15,7 +15,9 @@ integrates with the host app through the ExoPlayer 2.x based plugin SPI. Declare
 ./gradlew :vcatd-dav1d-plugin:dist   # → app/build/outputs/dist/vcatd-dav1d-plugin.aar
 ```
 
-dav1d is linked from prebuilt static libs in `app/third_party/dav1d/lib/<abi>/libdav1d.a`.
+dav1d is built from source by the `buildDav1d_<abi>` Gradle task (clone at pinned release 1.5.3 →
+meson/ninja → install into `app/build/dav1d/install-<abi>`), so meson and ninja are host
+prerequisites alongside the NDK.
 The `dist` task injects `classes.dex` into the AAR (required for host DexClassLoader loading).
 
 ## Architecture
@@ -38,4 +40,11 @@ The `dist` task injects `classes.dex` into the AAR (required for host DexClassLo
   `_1`), and the plugin-manifest `pluginClass` + Android `namespace` use the same package.
 - Native lib renamed to `vcat_dav1d_jni` (was `vcat_jni` in libvcat) to avoid colliding with
   libvcat's own `libvcat_jni.so` in the host.
-- dav1d is statically linked from bundled prebuilt `.a` libs (no build-from-source step).
+- dav1d is **built from source**, not carried as a committed prebuilt `.a`. A binary in git is
+  permanent and grows the repo on every dependency bump; the source pin in `app/build.gradle`
+  records exactly what shipped instead. All VCAT decoder plugins follow this arrangement (vvdec,
+  dav2d, dav1d) — dav1d and dav2d use meson rather than CMake, so their tasks generate an NDK
+  cross file per ABI.
+- The pin is **1.5.3**, the release whose public headers match the prebuilt previously shipped, so
+  the switch to a source build left decoder behavior unchanged. VCAT measures decoder performance,
+  so bumping dav1d should be deliberate (`-Pdav1dRef=`), not incidental.
