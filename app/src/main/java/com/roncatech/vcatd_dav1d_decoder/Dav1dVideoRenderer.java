@@ -173,11 +173,24 @@ final class Dav1dVideoRenderer extends DecoderVideoRenderer {
         return earlyUs < -500_000;
     }
 
-    @Override
-    protected boolean shouldForceRenderOutputBuffer(long earlyUs, long elapsedRealtimeUs) {
-        // render when due or slightly late
-        return earlyUs <= 0;
-    }
+    // shouldForceRenderOutputBuffer is deliberately NOT overridden.
+    //
+    // It used to return `earlyUs <= 0` -- "render when due or slightly late". In
+    // DecoderVideoRenderer.processOutputBuffer the force-render check runs *before* the drop
+    // checks, so that rendered every late frame and left shouldDropOutputBuffer below it
+    // unreachable. Playback then ran at whatever rate the decoder managed instead of dropping to
+    // stay on the clock.
+    //
+    // That makes a benchmark actively misleading, because a decoder that cannot keep up is
+    // rewarded. Measured on CPH2625 with the 604.8 s / 29.97 fps VVC stream: vvdec 3.0.0
+    // sustained 3.8 loops/hour against a realtime 5.95, i.e. 0.64x -- playing in slow motion,
+    // reporting frames_dropped = 0, and lasting 8.0 h, while 3.2.0 played at 0.97x realtime and
+    // "only" lasted 6.57 h. The slower decoder looked better.
+    //
+    // VCAT measures user experience, so playback has to advance at the content's frame rate and
+    // shed frames when the decoder falls behind -- what a video player does. ExoPlayer's default
+    // gives that: force-render only when late AND more than 100 ms since the last render, which
+    // keeps the stall guard and leaves shouldDropOutputBuffer to decide.
 
 
     @Override
