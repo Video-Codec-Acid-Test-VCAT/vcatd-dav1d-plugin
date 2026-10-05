@@ -4,6 +4,64 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
 
 ---
 
+## 2026-10-04 — Hold the native frame rate: stop force-rendering late frames
+
+**Theme:** A benchmark that lets playback slow down rewards the decoder that cannot keep up. This
+removes the override that made that possible.
+
+### The defect
+
+```java
+protected boolean shouldForceRenderOutputBuffer(long earlyUs, long elapsedRealtimeUs) {
+    return earlyUs <= 0;          // "render when due or slightly late"
+}
+```
+
+`DecoderVideoRenderer.processOutputBuffer` runs the force-render check **before** the drop
+checks, so any frame that was due *or late* was rendered unconditionally and the
+`shouldDropOutputBuffer` override below it (−50 ms) was unreachable dead code. No frame could
+ever be dropped: when the decoder fell behind, the timeline stretched instead.
+
+Removed rather than retuned, so ExoPlayer's default applies — force-render only when late **and**
+more than 100 ms since the last render, which keeps the stall guard and leaves
+`shouldDropOutputBuffer` to decide, with `shouldDropBuffersToKeyframe` (−500 ms) for falling far
+behind.
+
+### Why it matters, measured elsewhere
+
+The clearest evidence came from the vvdec plugin, which carried an identical override. On
+CPH2625 against a 604.8 s / 29.97 fps 1080p VVC stream, where realtime is 5.95 loops/hour:
+
+```
+vvdec 3.0.0   3.8 loops/hour = 0.64x realtime, frames_dropped = 0, 8.00 h battery
+vvdec 3.2.0   5.8 loops/hour = 0.97x realtime, frames_dropped = 0, 6.57 h battery
+```
+
+3.0.0 was playing in slow motion while reporting no drops, so it looked like the better battery
+result despite never delivering the content at its frame rate. That is the failure mode this
+removes: with the fix, a decoder that cannot sustain the content reports it as dropped frames at
+native rate rather than as a stretched timeline.
+
+The same override was present in all four software decoder plugins, so `video.frames_dropped` had
+been structurally zero for every one of them — which is why historical telemetry shows a maximum
+of 0 or 1 dropped frames across every run.
+
+### Effect on dav1d specifically — not yet established
+
+The two CPH2625 dav1d runs available both sustained **exactly 10.0 loops/hour** across runs of
+very different length (17.72 h and 11.02 h). A decoder-limited rate would be expected to vary
+with thermal state, so that stability suggests dav1d was already being paced by renderer
+back-pressure on this content and the override was never reached. If so, this change is a
+correctness fix for content dav1d *cannot* sustain rather than something that alters the 1080p
+AV1 results.
+
+That is inference, not measurement: it depends on the nominal duration of
+`av1-1920X1080p29.97fps-fd2`, which was not recorded in telemetry and could not be checked when
+this was written. 10.0 loops/hour implies a 360 s clip if the runs were at realtime. Worth
+confirming before comparing any dav1d result across this change.
+
+---
+
 ## 2026-08-30 — Build dav1d from source; drop the committed prebuilt `.a` libs
 
 **Theme:** Stop carrying a native dependency as a binary in git. With this change all VCAT decoder
