@@ -56,7 +56,8 @@ extern "C" {
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO , LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-static constexpr size_t kMaxPendingPackets = 16; // capacity guard (tune as needed)
+// Soft threshold for logging only; input is never refused. See nativeQueueInput.
+static constexpr size_t kPendingBacklogWarn = 64;
 
 struct InputNode {
     Dav1dData data;        // dav1d takes ownership when dav1d_send_data == 0
@@ -66,9 +67,22 @@ struct InputNode {
     InputNode& operator=(const InputNode&) = delete;
 };
 
+struct PictureHolder;   // defined below; NativeCtx only holds pointers
+
 struct NativeCtx {
     Dav1dContext* c = nullptr;
     std::deque<InputNode*> pending;
+
+    /**
+     * Pictures dav1d has produced but the caller has not collected yet.
+     *
+     * SimpleDecoder's contract is one output per decode() call, but dav1d can have several
+     * pictures ready at once. Taking only one per call leaves the surplus inside the decoder,
+     * so output runs permanently behind input and every late frame is dropped by the renderer --
+     * a fixed fraction, independent of load, with the CPU barely busy. nativeDequeueFrame now
+     * drains to EAGAIN, parks the surplus here, and hands out one per call.
+     */
+    std::deque<PictureHolder*> ready;
 
     // Counters/telemetry
     uint32_t pkts_in_total = 0;
@@ -102,6 +116,16 @@ struct PictureHolder {
 };
 
 // ------------------- Pending queue helpers -------------------
+
+/** Unrefs and frees every picture parked in the ready queue. */
+static void release_all_ready(NativeCtx* ctx) {
+    while (!ctx->ready.empty()) {
+        PictureHolder* h = ctx->ready.front();
+        ctx->ready.pop_front();
+        dav1d_picture_unref(&h->pic);
+        delete h;
+    }
+}
 
 static void release_all_pending(NativeCtx* ctx) {
     while (!ctx->pending.empty()) {
@@ -146,6 +170,10 @@ Java_com_roncatech_vcatd_1dav1d_1decoder_NativeDav1d_nativeCreate(
     Dav1dSettings s;
     dav1d_default_settings(&s);
     s.n_threads = (frameThreads > 0) ? frameThreads : 1;
+    // Use the thread pool for tile parallelism inside one frame rather than decoding several
+    // frames in parallel. Frame-parallel mode keeps N frames in flight, which adds N frame
+    // intervals of output latency that the renderer sees as lateness and charges as drops.
+    s.max_frame_delay = 1;
 
     int rc = dav1d_open(&ctx->c, &s);
     if (rc != 0) {
@@ -164,6 +192,7 @@ auto* ctx = reinterpret_cast<NativeCtx*>(handle);
 if (!ctx) return;
 ctx->dropped_at_flush += static_cast<uint32_t>(ctx->pending.size());
 release_all_pending(ctx);
+release_all_ready(ctx);
 dav1d_flush(ctx->c);
 }
 
@@ -173,6 +202,7 @@ Java_com_roncatech_vcatd_1dav1d_1decoder_NativeDav1d_nativeClose(
 auto* ctx = reinterpret_cast<NativeCtx*>(handle);
 if (!ctx) return;
 release_all_pending(ctx);
+release_all_ready(ctx);
 if (ctx->c) {
 dav1d_close(&ctx->c);
 ctx->c = nullptr;
@@ -190,8 +220,11 @@ jobject byteBuffer, jint offset, jint size, jlong ptsUs) {
 auto* ctx = reinterpret_cast<NativeCtx*>(handle);
 if (!ctx || !ctx->c || !byteBuffer || size <= 0) return -EINVAL;
 
-if (ctx->pending.size() >= kMaxPendingPackets) {
-return -EAGAIN;
+// Never refuse input. SimpleDecoder removes the buffer from its queue before calling
+// decode(), so a declined packet is discarded rather than retried -- silent bitstream loss,
+// not back-pressure. The backlog is unbounded and only logged past a soft threshold.
+if (ctx->pending.size() == kPendingBacklogWarn) {
+LOGW("input backlog at %zu packets; decoder is not keeping up", ctx->pending.size());
 }
 
 uint8_t* src = static_cast<uint8_t*>(env->GetDirectBufferAddress(byteBuffer));
@@ -225,7 +258,7 @@ extern "C" JNIEXPORT jboolean JNICALL
         JNIEnv* /*env*/, jclass /*clazz*/, jlong handle) {
 auto* ctx = reinterpret_cast<NativeCtx*>(handle);
 if (!ctx || !ctx->c) return JNI_FALSE;
-return (ctx->pending.size() < kMaxPendingPackets) ? JNI_TRUE : JNI_FALSE;
+return JNI_TRUE;   // input is never refused; see nativeQueueInput
 }
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -237,33 +270,46 @@ if (!ctx || !ctx->c) return 0;
 
 flush_pending_to_decoder(ctx);
 
-Dav1dPicture pic;
-std::memset(&pic, 0, sizeof(pic));
-int rc = dav1d_get_picture(ctx->c, &pic);
-if (rc == -EAGAIN) {
-ctx->pics_eagain++;
-return 0;
-}
-if (rc < 0) {
-LOGE("dav1d_get_picture failed: %d", rc);
-if (outWH && env->GetArrayLength(outWH) >= 2) {
-jint wh_err[2] = { -1, rc };
-env->SetIntArrayRegion(outWH, 0, 2, wh_err);
-}
-return 0;
+// Drain every picture dav1d has ready, not just one. Pictures left inside the decoder are
+// handed out on later calls, so output drifts permanently behind input and the renderer
+// charges the difference as dropped frames.
+while (true) {
+    Dav1dPicture pic;
+    std::memset(&pic, 0, sizeof(pic));
+    int rc = dav1d_get_picture(ctx->c, &pic);
+    if (rc == -EAGAIN) {
+        ctx->pics_eagain++;
+        break;
+    }
+    if (rc < 0) {
+        LOGE("dav1d_get_picture failed: %d", rc);
+        // Only surface the error if nothing is parked; a picture already in hand is still good
+        // and the error will be reported again on the next call.
+        if (ctx->ready.empty() && outWH && env->GetArrayLength(outWH) >= 2) {
+            jint wh_err[2] = { -1, rc };
+            env->SetIntArrayRegion(outWH, 0, 2, wh_err);
+            return 0;
+        }
+        break;
+    }
+    auto* h = new PictureHolder();
+    h->pic = pic;
+    ctx->ready.push_back(h);
 }
 
-auto* hold = new PictureHolder();
-hold->pic = pic;
+if (ctx->ready.empty()) return 0;
 
-jint wh[2] = { static_cast<jint>(pic.p.w), static_cast<jint>(pic.p.h) };
+PictureHolder* hold = ctx->ready.front();
+ctx->ready.pop_front();
+
+jint wh[2] = { static_cast<jint>(hold->pic.p.w), static_cast<jint>(hold->pic.p.h) };
 env->SetIntArrayRegion(outWH, 0, 2, wh);
 
-jlong pts[1] = { static_cast<jlong>(pic.m.timestamp) };
+jlong pts[1] = { static_cast<jlong>(hold->pic.m.timestamp) };
 env->SetLongArrayRegion(outPtsUs, 0, 1, pts);
 
 ctx->pics_out++;
-ctx->last_out_pts = pic.m.timestamp;
+ctx->last_out_pts = hold->pic.m.timestamp;
 
 return reinterpret_cast<jlong>(hold);
 }

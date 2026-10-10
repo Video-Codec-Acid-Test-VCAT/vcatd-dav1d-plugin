@@ -172,18 +172,11 @@ import com.google.android.exoplayer2.decoder.VideoDecoderOutputBuffer;
 
         // Enqueue current input
         int rc = NativeDav1d.nativeQueueInput(nativeCtx, in.data, in.data.position(), in.data.remaining(), in.timeUs);
-        if (rc == -11) { // EAGAIN: needs drain first
-            int[] wh = new int[2]; long[] pts = new long[1];
-            long h = NativeDav1d.nativeDequeueFrame(nativeCtx, wh, pts);
-            if (wh[0] == -1) return new Dav1dDecoderException("dav1d_get_picture failed: " + wh[1]);
-            if (h != 0) {
-                out.mode=C.VIDEO_OUTPUT_MODE_SURFACE_YUV; out.timeUs=pts[0];
-                out.width=wh[0]; out.height=wh[1]; out.format=inputFormat; out.nativePic=h;
-                if (decodeOnly) out.addFlag(FLAG_DECODE_ONLY);
-                return null;
-            }
-            return null;
-        }
+        // -EAGAIN is no longer possible: the native side never refuses input. It used to, and
+        // this branch then drained a frame and returned *without re-enqueueing `in`* -- but
+        // SimpleDecoder removes the buffer from its queue before calling decode(), so the packet
+        // was discarded, not retried. That is silent bitstream loss, not back-pressure. Treat it
+        // as a hard error now rather than losing data quietly.
         if (rc != 0) return new Dav1dDecoderException("nativeQueueInput failed: " + rc);
 
         // After enqueue, try one non-blocking drain

@@ -4,6 +4,55 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
 
 ---
 
+## 2026-10-10 — Port the three dav2d decode-path fixes; a constant 12.7% of frames were being dropped
+
+A 21 h dav1d run on `f1080p-p7-crf48-av1-fd2.mp4` dropped **12.7% of frames in every single
+telemetry row** — min 12.5%, max 12.8%, standard deviation **0.03** across 437 rows — at 15%
+CPU, with zero skip-to-keyframe events and the device cool. Load varies, scene complexity
+varies, the device heats and cools, and the number did not move. That is a fixed ratio, which
+means a mechanism, not a decoder struggling.
+
+The accounting ruled out miscounting: 209 iterations x 10,790 frames = 2,255,110 expected
+against 2,265,900 counted (the excess being the in-progress iteration), at 99.4% of realtime.
+The frames existed and were genuinely discarded.
+
+The cause was that this plugin never received the fixes `vcatd-dav2d-plugin` got during the AV2
+alt-ref investigation. All three applied here too.
+
+### One picture per `decode()`, with the surplus stranded
+
+`nativeDequeueFrame` called `dav1d_get_picture()` exactly once. `SimpleDecoder`'s contract is one
+output per `decode()` call, but dav1d can have several pictures ready at once, and the surplus
+stayed inside the decoder to be handed out on later calls. Output therefore ran permanently
+behind input, and the renderer charged the lag as dropped frames — a fixed fraction, independent
+of load, with the CPU barely busy, which is exactly the signature observed.
+
+Now drains to `EAGAIN` into a `std::deque<PictureHolder*> ready` on the context and hands out one
+per call. Parked pictures are released on flush and close.
+
+### Frame-parallel decoding added output latency
+
+`max_frame_delay` was left at dav1d's default, so with `n_threads = 2` the decoder kept several
+frames in flight. Each frame of delay is a frame interval of output latency that the renderer
+sees as lateness. Now forced to `1`, using the thread pool for tile parallelism within a frame
+instead — matching `vcatd-dav2d-plugin`.
+
+### Declined input was discarded, not retried
+
+A 16-packet cap made `nativeQueueInput` return `-EAGAIN`, and the Java side then drained one
+frame and returned **without re-enqueueing the input**. `SimpleDecoder` removes the buffer from
+its queue before calling `decode()`, so a declined packet is lost. That is silent bitstream loss,
+not back-pressure — the same defect as dav2d's `605640e`. Input is now never refused; the backlog
+is unbounded and only logged past a soft threshold of 64 packets.
+
+**Unverified.** This is the diagnosis the evidence points to, built and confirmed present in both
+ABIs, but not yet run. If correct, the next dav1d run should show the constant 12.7% collapse to
+something small and load-dependent. If it does not, the pipeline theory is wrong and the
+`earlyUs` diagnostic already in the vvdec renderer should be added here to measure the lateness
+directly.
+
+---
+
 ## 2026-10-04 — Hold the native frame rate: stop force-rendering late frames
 
 **Theme:** A benchmark that lets playback slow down rewards the decoder that cannot keep up. This
