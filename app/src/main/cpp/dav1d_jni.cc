@@ -170,10 +170,12 @@ Java_com_roncatech_vcatd_1dav1d_1decoder_NativeDav1d_nativeCreate(
     Dav1dSettings s;
     dav1d_default_settings(&s);
     s.n_threads = (frameThreads > 0) ? frameThreads : 1;
-    // Use the thread pool for tile parallelism inside one frame rather than decoding several
-    // frames in parallel. Frame-parallel mode keeps N frames in flight, which adds N frame
-    // intervals of output latency that the renderer sees as lateness and charges as drops.
-    s.max_frame_delay = 1;
+    // max_frame_delay is deliberately left at dav1d's default. Forcing it to 1 -- as
+    // vcatd-dav2d-plugin does -- was tried and measured far worse: 42% dropped against 3% in the
+    // same opening 30 s, with CPU at ~13% (about one core). Low delay confines the thread pool to
+    // tile parallelism inside a single frame, so on a stream with few tiles the second thread has
+    // nothing to do and throughput collapses. dav2d needs that setting for an alt-ref
+    // correctness bug that dav1d does not have, so the cost buys nothing here.
 
     int rc = dav1d_open(&ctx->c, &s);
     if (rc != 0) {
