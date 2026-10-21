@@ -4,6 +4,43 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
 
 ---
 
+## 2026-10-10 — Revert `max_frame_delay = 1`; it cost throughput and bought nothing
+
+Ported from `vcatd-dav2d-plugin` along with two other decode-path fixes, then measured and backed
+out. Same clip and conditions, opening ~30 s on device:
+
+| setting | rendered | dropped |
+|---|---|---|
+| before the port | 896 frames (29.4 fps) | 3.3% |
+| `max_frame_delay = 1` | 519 frames (17.1 fps) | **42.4%** |
+
+CPU sat at 13.8%, about one core. Low delay confines the thread pool to tile parallelism inside a
+single frame, so on a stream with few tiles the second thread has nothing to do and throughput
+collapses. dav2d carried that setting to dodge an alt-ref defect dav1d does not have, so the cost
+bought nothing here.
+
+**The other two ports stay:** draining every ready picture rather than one per `decode()`, and
+never refusing input. Both address real defects and neither constrains parallelism.
+
+### Later note (2026-10-20)
+
+`vcatd-dav2d-plugin` has since removed `max_frame_delay = 1` as well — the alt-ref EINVAL it was
+working around turned out to be the one-picture-per-`decode()` drain bug, which that plugin had
+already fixed. So both plugins now run at dav2d/dav1d's default frame delay, for the same reason
+this revert gives.
+
+Worth knowing for this plugin: `Dav1dDecoder` still extends `SimpleDecoder`, which emits at most
+one output buffer per input and whose `dequeueOutputBuffer()` is `final`. On AV1 content where a
+temporal unit yields more than one shown picture, that caps output at the input rate — the defect
+that cost roughly half the frames on AV2 and produced the `-22` Ittiam reported. Not observed
+here, but the fix, if ever needed, is `MultiOutputDecoder` in `vcatd-dav2d-plugin`.
+
+### Commits
+
+`4c38d1a`
+
+---
+
 ## 2026-10-10 — Port the three dav2d decode-path fixes; a constant 12.7% of frames were being dropped
 
 A 21 h dav1d run on `f1080p-p7-crf48-av1-fd2.mp4` dropped **12.7% of frames in every single
