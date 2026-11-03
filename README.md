@@ -85,7 +85,7 @@ Gradle in turn ignores `ios/` and `native/`.
 - **vcat-d-ios checked out next to this repo.** The build compiles against the plugin API header
   in vcat-d-ios's `plugin-api/vcat_decoder_plugin.h`:
   ```
-  AndroidStudioProjects/
+  Projects/
     vcatd-dav1d-plugin/    <- this repo
     vcat-d-ios/            <- provides plugin-api/vcat_decoder_plugin.h
   ```
