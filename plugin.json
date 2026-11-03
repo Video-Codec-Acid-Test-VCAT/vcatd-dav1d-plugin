@@ -1,0 +1,13 @@
+{
+  "id": "vcat.dav1d",
+  "mimeType": "video/av01",
+  "decoderNamePrefix": "vcat-dav1d-",
+  "artifact": "vcatd-dav1d-plugin",
+  "source": {
+    "name": "dav1d",
+    "remote": "https://code.videolan.org/videolan/dav1d.git",
+    "ref": "1.5.3"
+  },
+  "linkerFlags": [],
+  "license": "GPL-3.0-or-later; dav1d BSD-2-Clause"
+}

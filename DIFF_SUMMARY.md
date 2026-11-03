@@ -4,6 +4,63 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
 
 ---
 
+## 2026-11-02 — iOS output: the same plugin now builds for vcat-d-ios
+
+**Theme:** One plugin project, two platforms. `ios/build_xcframework.sh` produces
+`build/dist/vcatd-dav1d-plugin.xcframework`, a single drop-in for vcat-d-ios's
+`decoder-plugins/`, alongside the existing `.aar`. vcat-d-ios no longer builds dav1d itself.
+
+### Shared, not copied
+
+`plugin.json` holds the id, MIME type and the pinned dav1d source. Gradle now reads `dav1dRef` /
+`dav1dRemote` defaults from it (`-Pdav1dRef` etc. still override), and so does the iOS script.
+Before this, vcat-d-ios carried its own copy of the pin with a "keep in sync" comment. Gradle
+only includes `app/`, and the iOS script needs no Android SDK, so each side ignores the other.
+
+### The iOS plugin
+
+- **`native/vcat_plugin_dav1d.c`** implements vcat-d-ios's C ABI
+  (`plugin-api/vcat_decoder_plugin.h`) over dav1d. Its behavior matches `dav1d_jni.cc` where
+  they overlap: default settings, `max_frame_delay` left at the default per the 2026-10-10
+  revert, version truncated at `-`, and `decoder_name` = `vcat-dav1d-1.5.3`. So iOS and Android
+  logs carry the same decoder string.
+- **The only exported symbol is `_vcatd_dav1d_plugin_entry`.** The shim and `libdav1d.a` are
+  prelinked with `ld -r -exported_symbols_list '_vcatd_dav1d_*'`, making all 869 dav1d symbols
+  non-external. The namespace comes from the id, and the build fails if anything else is
+  exported. Proven by linking two copies of this plugin under different namespaces, each with
+  its own full dav1d, into one simulator binary: both open decoders and report their own names.
+- **`-fno-common` for dav1d** (iOS build only). The first build failed its own export check:
+  `_dav1d_masks` and `_dav1d_qm_tbl` were still global. They're tentative definitions, emitted
+  as common symbols, which the export list doesn't localize. Two plugins' commons would also
+  *merge* silently instead of colliding. Xcode 27's ld no longer has `-d` to force definitions,
+  so the fix is at compile time.
+
+### Not changed
+
+Android behavior: `./gradlew dist` produces the same `.aar` contents. One difference stays as it
+was: for `threads <= 0`, Android's JNI uses 1, while the iOS shim keeps dav1d's own default, as
+vcat-d-ios always has. Worth unifying deliberately, since it changes measurements.
+
+Verified: `./gradlew dist` builds. In vcat-d-ios with this plugin dropped in, 232 unit + 13 UI
+tests pass, including AV1 playback and AV1 seek-resume, and a device build links.
+Run on a Galaxy S25 Ultra (SM-S938U1, Android 17), clean-built (`./gradlew clean dist`, dav1d
+fetched at the `plugin.json` pin): vcat built with this branch's `.aar` registered `vcat.dav1d`
+and played a 1080p30 AV1 clip with `Video decoder initialized: vcat-dav1d-1.5.3`, 442 frames
+rendered, 2 dropped, no decode errors.
+
+### Packaging detail
+
+The manifest travels inside the XCFramework as `vcat-plugin.json`, so the iOS plugin is one
+drop-in, the same as the `.aar` with its `assets/plugin-manifest.json`. Xcode ignores extra
+top-level files in an XCFramework, and vcat-d-ios's pickup links the slice `.a` files directly.
+
+### Commits
+
+Branch `vcatd-ios-plugin-model` (this commit). The app side is on vcat-d-ios branch
+`plugin-model`.
+
+---
+
 ## 2026-10-10 — Revert `max_frame_delay = 1`; it cost throughput and bought nothing
 
 Ported from `vcatd-dav2d-plugin` along with two other decode-path fixes, then measured and backed

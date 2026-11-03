@@ -67,13 +67,15 @@ android {
 def dav1dWorkRoot = layout.buildDirectory.dir('dav1d').get().asFile
 def dav1dSrcDir   = new File(dav1dWorkRoot, 'src')
 
-// 1.5.3, not the newer 1.5.4: this is the release whose public headers match the prebuilt this
-// plugin previously shipped, so decoder behavior is unchanged by the switch to building from
-// source. VCAT measures decoder performance, so a dav1d bump should be a deliberate act — pass
-// -Pdav1dRef=1.5.4 to take it. (The only public-header delta between the two is an OS/2
-// dllexport branch, irrelevant to Android.)
-def dav1dRef    = (findProperty('dav1dRef')    ?: '1.5.3') as String
-def dav1dRemote = (findProperty('dav1dRemote') ?: 'https://code.videolan.org/videolan/dav1d.git') as String
+// The pin lives in ../plugin.json, shared with the iOS build (ios/build_xcframework.sh), so both
+// platforms always build the same dav1d. It is 1.5.3, not the newer 1.5.4: this is the release
+// whose public headers match the prebuilt this plugin previously shipped, so decoder behavior is
+// unchanged by the switch to building from source. VCAT measures decoder performance, so a dav1d
+// bump should be a deliberate act: edit plugin.json, or pass -Pdav1dRef=1.5.4 for a one-off.
+// (The only public-header delta between the two is an OS/2 dllexport branch, irrelevant here.)
+def pluginJson  = new groovy.json.JsonSlurper().parse(rootProject.file('plugin.json'))
+def dav1dRef    = (findProperty('dav1dRef')    ?: pluginJson.source.ref) as String
+def dav1dRemote = (findProperty('dav1dRemote') ?: pluginJson.source.remote) as String
 def dav1dLocal  = (findProperty('DAV1D_SRC')   ?: System.getenv('DAV1D_SRC')) as String
 
 // Meson cpu_family/cpu and NDK clang triple per ABI.

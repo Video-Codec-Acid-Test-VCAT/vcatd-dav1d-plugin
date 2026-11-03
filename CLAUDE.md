@@ -12,10 +12,16 @@ integrates with the host app through the ExoPlayer 2.x based plugin SPI. Declare
 ## Build
 
 ```bash
-./gradlew :vcatd-dav1d-plugin:dist   # → app/build/outputs/dist/vcatd-dav1d-plugin.aar
+./gradlew :vcatd-dav1d-plugin:dist   # → app/build/outputs/dist/vcatd-dav1d-plugin.aar (Android)
+ios/build_xcframework.sh             # → build/dist/vcatd-dav1d-plugin.xcframework (iOS)
 ```
 
-dav1d is built from source by the `buildDav1d_<abi>` Gradle task (clone at pinned release 1.5.3 →
+This one project builds both platforms. `plugin.json` is the single source of truth for id,
+MIME type and the pinned dav1d ref; Gradle reads it, and so does `ios/build_xcframework.sh`.
+Gradle only includes `app/`; the iOS script never touches Gradle and needs no Android SDK. Keep
+it that way: platform-specific code goes in `app/` (Android) or `ios/` + `native/` (iOS).
+
+dav1d is built from source by the `buildDav1d_<abi>` Gradle task (clone at the pinned release →
 meson/ninja → install into `app/build/dav1d/install-<abi>`), so meson and ninja are host
 prerequisites alongside the NDK.
 The `dist` task injects `classes.dex` into the AAR (required for host DexClassLoader loading).
@@ -31,7 +37,22 @@ The `dist` task injects `classes.dex` into the AAR (required for host DexClassLo
 - **`NativeDav1d`** + **`Dav1dLibrary`** — JNI declarations; loads `libvcat_dav1d_jni.so`.
 - **`app/src/main/cpp/dav1d_jni.cc`** — JNI implementation over dav1d.
 
+- **`native/vcat_plugin_dav1d.c`** (iOS) — implements vcat-d-ios's plugin C ABI
+  (`plugin-api/vcat_decoder_plugin.h`) over dav1d. Contains no plugin name: the namespace, id,
+  MIME type and decoder-name prefix come from `plugin.json` through `-D` flags, so a fork's plugin
+  can reuse it unchanged. Mirrors `dav1d_jni.cc` behavior (default settings, `max_frame_delay`
+  untouched, version truncated at '-', `decoder_name` = `vcat-dav1d-<version>`).
+- **`ios/build_xcframework.sh`** — per slice: dav1d (meson, `-fno-common`), shim, then
+  `ld -r -exported_symbols_list '_vcatd_dav1d_*'` so only `vcatd_dav1d_plugin_entry` is exported;
+  `nm` check; XCFramework with `vcat-plugin.json` inside.
+
 ## Key Design Decisions
+
+- **iOS namespace isolation.** All iOS plugins link into one app binary, so a plugin may export
+  only `_<namespace>*` (namespace from the id: `vcat.dav1d` → `vcatd_dav1d_`). dav1d is built
+  with `-fno-common` because its tentative definitions (`dav1d_masks`, `dav1d_qm_tbl`) otherwise
+  become common symbols, which the export list does not hide and which would silently merge with
+  another plugin's. Xcode 27's ld dropped `-d`, so this has to happen at compile time.
 
 - ExoPlayer 2.x (2.19.1); `decoder-plugin-api` and `exoplayer-core` are `compileOnly`.
 - Package is `com.roncatech.vcatd_dav1d_decoder` (moved out of the dead `com.roncatech.libvcat.*`
