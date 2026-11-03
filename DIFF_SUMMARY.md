@@ -4,6 +4,34 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
 
 ---
 
+## 2026-11-03 — README: build instructions for both platforms
+
+The README now reads as one project with two outputs: separate **Android** and **iOS** sections,
+each with its own prerequisites, build steps and instructions for using the result. A shared
+section explains the pinned dav1d source in `plugin.json`.
+
+The iOS section is new in full:
+- **Prerequisites.** Full Xcode with `xcode-select` pointing at it (the Command Line Tools alone
+  fail), meson ≥ 1.2 and ninja, and vcat-d-ios checked out next to this repo for the plugin API
+  header.
+- **Build.** The expected output, the layout of the XCFramework, and what the script does per
+  slice.
+- **Overrides.** A table: `DAV1D_REF`, `DAV1D_REMOTE`, `DAV1D_SRC`, `VCAT_PLUGIN_API_DIR`,
+  `IPHONEOS_DEPLOYMENT_TARGET`.
+- **Verify and install.** An `nm` check, then the drop-in steps for vcat-d-ios, including removing
+  the old copy first: `cp -R` merges into an existing directory and can leave stale files.
+- **Troubleshooting.** Covers the errors actually hit in practice, such as `xcode-select`
+  pointing at the Command Line Tools or at a wrong Xcode path.
+
+Every iOS command was run as written before committing. The build output, XCFramework layout,
+`nm` result and vcat-d-ios pickup all match what the README shows.
+
+### Commits
+
+Branch `vcatd-ios-plugin-model` (this commit).
+
+---
+
 ## 2026-11-02 — iOS output: the same plugin now builds for vcat-d-ios
 
 **Theme:** One plugin project, two platforms. `ios/build_xcframework.sh` produces
