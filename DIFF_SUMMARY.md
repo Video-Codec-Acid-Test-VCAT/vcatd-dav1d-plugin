@@ -4,6 +4,38 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
 
 ---
 
+## 2026-11-03 — iOS output is now a self-describing dynamic library
+
+The iOS plugin changed from a prelinked static library to **one dynamic library**,
+`vcatd_dav1d.framework`, in the XCFramework. This follows vcat-d-ios's plugin API v2.
+
+- **No more symbol hiding.** Each dynamic library has its own symbol namespace, so the
+  `ld -r -exported_symbols_list` prelink, the namespaced entry symbol and the `-fno-common` build
+  of dav1d are all gone. Two plugins wrapping dav1d now coexist by construction: verified in
+  vcat-d-ios with this plugin and a second build of it under another id, both embedded and both
+  decoding.
+- **One entry name.** The library exports only `vcat_plugin_entry`, the same name in every
+  plugin.
+- **Self-describing.** The build generates `vcat_plugin_manifest.h` from `plugin.json`. It
+  carries the identity and the manifest JSON, which is placed in `__TEXT,__vcat_manifest` and
+  returned by `manifest_json()`. `vcat-plugin.json` is no longer a separate file in the
+  XCFramework. The build checks that the embedded bytes read back with `segedit`; `otool -s` was
+  tried first and prints target-endian words.
+- **New descriptor entry.** `end_of_stream` is a no-op here, since dav1d drains via
+  `dav1d_get_picture` on its own.
+- **Framework identity.** The framework's `Info.plist` carries `VCATDecoderPlugin = true` and
+  bundle id `com.roncatech.vcat.dav1d`. The library depends only on `libSystem`.
+- **README:** the iOS section is rewritten for the dynamic form. Install is now drop in and build;
+  vcat-d-ios no longer needs `xcodegen generate` for a plugin change.
+
+Android output is unchanged (`./gradlew dist` still builds).
+
+### Commits
+
+Branch `vcatd-ios-plugin-model` (this commit).
+
+---
+
 ## 2026-11-03 — README: build instructions for both platforms
 
 The README now reads as one project with two outputs: separate **Android** and **iOS** sections,

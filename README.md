@@ -6,7 +6,7 @@ Wraps [dav1d](https://code.videolan.org/videolan/dav1d) (VideoLAN AV1 decoder) a
 plugin. Declares MIME type `video/av01`.
 
 One project, two outputs: an **Android `.aar`** for vcat (Gradle, `app/`) and an **iOS
-`.xcframework`** for vcat-d-ios (`ios/` + `native/`). Both are built from the same
+`.xcframework`** (one dynamic library) for vcat-d-ios (`ios/` + `native/`). Both are built from the same
 `plugin.json` (id, MIME type, pinned dav1d source), and each build ignores the other platform's
 directories. Build instructions: [Android](#android), [iOS](#ios).
 
@@ -15,7 +15,8 @@ directories. Build instructions: [Android](#android), [iOS](#ios).
 | Build | `./gradlew :vcatd-dav1d-plugin:dist` | `ios/build_xcframework.sh` |
 | Output | `app/build/outputs/dist/vcatd-dav1d-plugin.aar` | `build/dist/vcatd-dav1d-plugin.xcframework` |
 | Drop into | `vcat/decoder-plugins/` | `vcat-d-ios/decoder-plugins/` |
-| Decoder glue | JNI (`app/src/main/cpp/dav1d_jni.cc`) | C ABI shim (`native/vcat_plugin_dav1d.c`) |
+| Decoder glue | JNI (`app/src/main/cpp/dav1d_jni.cc`) | C ABI glue (`native/vcat_plugin_dav1d.c`) |
+| Form | `.aar`, loaded at app startup | dynamic library, embedded at app build, loaded at app launch |
 
 ## Pinned dav1d source
 
@@ -67,7 +68,8 @@ cp app/build/outputs/dist/vcatd-dav1d-plugin.aar ../vcat-d/decoder-plugins/
 ## iOS
 
 The iOS build is a shell script. It doesn't use Gradle and needs no Android SDK or NDK, and
-Gradle in turn ignores `ios/` and `native/`.
+Gradle in turn ignores `ios/` and `native/`. The output is **one self-describing dynamic
+library**, packaged as one `.xcframework`.
 
 ### Prerequisites
 
@@ -83,7 +85,8 @@ Gradle in turn ignores `ios/` and `native/`.
   brew install meson ninja
   ```
 - **vcat-d-ios checked out next to this repo.** The build compiles against the plugin API header
-  in vcat-d-ios's `plugin-api/vcat_decoder_plugin.h`:
+  in vcat-d-ios's `plugin-api/vcat_decoder_plugin.h`, the one header shared by the app and all
+  plugins:
   ```
   Projects/
     vcatd-dav1d-plugin/    <- this repo
@@ -105,10 +108,10 @@ once for the simulator. Later runs reuse those builds unless the pinned ref chan
 successful run ends with:
 
 ```
-== vcat.dav1d  namespace=vcatd_dav1d_  dav1d=1.5.3  api=v1
-== iphoneos: exports _vcatd_dav1d_plugin_entry
-== iphonesimulator: exports _vcatd_dav1d_plugin_entry
-== built .../build/dist/vcatd-dav1d-plugin.xcframework (manifest: vcat-plugin.json inside)
+== vcat.dav1d  framework=vcatd_dav1d  dav1d=1.5.3  api=v2
+== iphoneos: vcatd_dav1d.framework exports _vcat_plugin_entry, manifest embedded
+== iphonesimulator: vcatd_dav1d.framework exports _vcat_plugin_entry, manifest embedded
+== built .../build/dist/vcatd-dav1d-plugin.xcframework
 ```
 
 **Output:** `build/dist/vcatd-dav1d-plugin.xcframework`, a single drop-in:
@@ -116,23 +119,29 @@ successful run ends with:
 ```
 vcatd-dav1d-plugin.xcframework/
   Info.plist
-  vcat-plugin.json                      manifest (id, namespace, entry symbol, API version)
-  ios-arm64/                            device slice
-    libvcatd_dav1d_plugin.a
-    Headers/vcatd_dav1d_plugin.h        declares the entry point only
-  ios-arm64-simulator/                  Apple Silicon simulator slice
-    libvcatd_dav1d_plugin.a
-    Headers/vcatd_dav1d_plugin.h
+  ios-arm64/vcatd_dav1d.framework/             device
+    vcatd_dav1d                                the dynamic library (dav1d + plugin glue)
+    Info.plist                                 VCATDecoderPlugin = true
+  ios-arm64-simulator/vcatd_dav1d.framework/   Apple Silicon simulator
+    vcatd_dav1d
+    Info.plist
 ```
 
+There's no manifest file and no header. The plugin is **self-describing**: its manifest (id,
+MIME type, API version, decoder source, license) is compiled into the library. The library
+returns it at runtime via `manifest_json()`, and it's also stored in the library's
+`__TEXT,__vcat_manifest` section, so the app's build can read it without running iOS code.
+
 **For each slice, the script:**
-1. Builds dav1d at the pin with meson, as a static library built with `-fno-common`.
-2. Compiles `native/vcat_plugin_dav1d.c`, the C ABI shim, with the namespace derived from the
-   id in `plugin.json` (`vcat.dav1d` → `vcatd_dav1d_`).
-3. Prelinks shim and dav1d into one object (`ld -r -exported_symbols_list`), so that **only
-   `_vcatd_dav1d_plugin_entry` is exported**. Every dav1d symbol is hidden, so this plugin can
-   share one app binary with any other plugin, even one wrapping another dav1d.
-4. Fails the build if anything else is exported.
+1. Builds dav1d at the pin with meson, as a static library.
+2. Generates a header from `plugin.json` carrying the plugin identity and the manifest.
+3. Compiles `native/vcat_plugin_dav1d.c`, the C ABI glue, and links it with dav1d into the
+   framework's dynamic library. The library **exports only `vcat_plugin_entry`**, the same
+   entry name in every VCAT plugin.
+4. Fails the build if anything else is exported, or if the embedded manifest doesn't read back.
+
+Because every plugin is its own dynamic library with its own symbol namespace, plugins can never
+collide inside the app, even two builds of the same decoder side by side.
 
 **Optional overrides,** as environment variables:
 
@@ -149,29 +158,28 @@ For a clean rebuild, remove the cached work: `rm -rf build/ios build/dist`.
 ### Verify (optional)
 
 ```bash
-X=build/dist/vcatd-dav1d-plugin.xcframework
-cat $X/vcat-plugin.json                                  # id, namespace, apiVersion
-nm -gUj $X/ios-arm64/libvcatd_dav1d_plugin.a             # exactly one: _vcatd_dav1d_plugin_entry
+F=build/dist/vcatd-dav1d-plugin.xcframework/ios-arm64/vcatd_dav1d.framework/vcatd_dav1d
+nm -gUj $F                                                    # exactly one: _vcat_plugin_entry
+xcrun segedit $F -extract __TEXT __vcat_manifest /dev/stdout  # the embedded manifest
 ```
 
 ### Using it with vcat-d-ios
-
-The plugin is linked into the app when the app is built; iOS can't load plugins at runtime.
-Adding or updating it is: drop it in, regenerate the project, build.
 
 ```bash
 rm -rf ../vcat-d-ios/decoder-plugins/vcatd-dav1d-plugin.xcframework   # remove any older copy first
 mkdir -p ../vcat-d-ios/decoder-plugins
 cp -R build/dist/vcatd-dav1d-plugin.xcframework ../vcat-d-ios/decoder-plugins/
-cd ../vcat-d-ios && xcodegen generate
 ```
 
-Then build vcat-d-ios as usual. Remove the old copy first because `cp -R` merges into an
-existing directory, which can leave stale files behind. `xcodegen generate` runs vcat-d-ios's
-plugin pickup, which validates the plugin (namespace, API version, exported symbols) and links
-it. If you skip it, the next build stops with a message telling you to run it. Conditions shows
-AV1 as `vcat.dav1d`, and telemetry rows record `vcat-dav1d-1.5.3`, the same string as on
-Android.
+Then build vcat-d-ios; nothing else is needed (if the Xcode project was never generated, run
+`xcodegen generate` once).
+- **What the build does:** its "Embed decoder plugins" phase validates the plugin (exports,
+  embedded manifest, API version), copies it into the app and signs it. The app discovers it at
+  launch.
+- **What you'll see:** Conditions shows AV1 as `vcat.dav1d`, and telemetry rows record
+  `vcat-dav1d-1.5.3`, the same string as on Android.
+- **Why remove the old copy first:** `cp -R` merges into an existing directory, which can leave
+  stale files behind.
 
 ### Troubleshooting
 
@@ -181,7 +189,7 @@ Android.
 | `xcode-select: error: invalid developer directory` | The path doesn't match your Xcode's actual name, e.g. `/Applications/Xcode-27.2.0.app` |
 | `meson not found` / `ninja not found` | `brew install meson ninja` |
 | `.../vcat_decoder_plugin.h not found` | Check out vcat-d-ios next to this repo, or set `VCAT_PLUGIN_API_DIR` |
-| `slice exports symbols outside _vcatd_dav1d_*` | A change exposed a non-namespaced symbol. Keep shim helpers `static`; the build refuses to package a plugin that could collide with another |
+| `library must export only _vcat_plugin_entry` | A change exposed another symbol. Keep glue helpers `static` |
 | vcat-d-ios: `built against plugin API vN, this app is vM` | The plugin API changed. Pull vcat-d-ios and rebuild the plugin |
 
 ## Dependencies

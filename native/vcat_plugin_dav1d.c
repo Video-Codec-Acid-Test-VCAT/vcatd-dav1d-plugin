@@ -1,13 +1,14 @@
 /*
  * vcat_plugin_dav1d.c -- implements the VCAT decoder plugin C ABI (vcat_decoder_plugin.h) over
- * dav1d. Used by the iOS build (ios/build_xcframework.sh); the Android build still goes through
- * app/src/main/cpp/dav1d_jni.cc.
+ * dav1d. Built into the iOS plugin's dynamic library by ios/build_xcframework.sh; the Android
+ * build still goes through app/src/main/cpp/dav1d_jni.cc.
  *
- * Contains no plugin name. The identity comes from plugin.json through the build:
- *   VCAT_NS                   namespace, e.g. vcatd_dav1d_  (names the one exported symbol)
+ * Contains no plugin name. The identity comes from plugin.json through vcat_plugin_manifest.h,
+ * which the build generates:
  *   VCAT_PLUGIN_ID            e.g. "vcat.dav1d"
  *   VCAT_PLUGIN_MIME          e.g. "video/av01"
  *   VCAT_DECODER_NAME_PREFIX  e.g. "vcat-dav1d-"
+ *   vcat_plugin_manifest[]    the manifest JSON, placed in the __TEXT,__vcat_manifest section
  * so a plugin wrapping a fork of dav1d can reuse this file unchanged with its own plugin.json.
  *
  * Behavior matches dav1d_jni.cc where the two overlap: dav1d's default settings,
@@ -23,15 +24,11 @@
 #include <dav1d/dav1d.h>
 
 #include "vcat_decoder_plugin.h"
+#include "vcat_plugin_manifest.h"
 
-#if !defined(VCAT_NS) || !defined(VCAT_PLUGIN_ID) || !defined(VCAT_PLUGIN_MIME) || \
-    !defined(VCAT_DECODER_NAME_PREFIX)
-#error "VCAT_NS, VCAT_PLUGIN_ID, VCAT_PLUGIN_MIME and VCAT_DECODER_NAME_PREFIX come from plugin.json via the build"
+#if !defined(VCAT_PLUGIN_ID) || !defined(VCAT_PLUGIN_MIME) || !defined(VCAT_DECODER_NAME_PREFIX)
+#error "vcat_plugin_manifest.h is generated from plugin.json by the build"
 #endif
-
-#define VCAT_CAT2(a, b) a##b
-#define VCAT_CAT(a, b) VCAT_CAT2(a, b)
-#define VCAT_ENTRY VCAT_CAT(VCAT_NS, plugin_entry)
 
 typedef struct {
     Dav1dContext *c;
@@ -58,6 +55,10 @@ static const char *plugin_version(void) {
 static const char *plugin_decoder_name(void) {
     pthread_once(&g_strings_once, init_strings);
     return g_decoder_name;
+}
+
+static const char *plugin_manifest_json(void) {
+    return vcat_plugin_manifest;
 }
 
 static int plugin_open(const vcat_decoder_config *config, void **out_ctx) {
@@ -153,6 +154,12 @@ static void plugin_release_picture(void *opaque, vcat_picture *picture) {
     picture->opaque = NULL;
 }
 
+/* dav1d needs no explicit signal: with no more input, dav1d_get_picture keeps returning the
+ * pictures it still holds until EAGAIN. */
+static void plugin_end_of_stream(void *opaque) {
+    (void)opaque;
+}
+
 static void plugin_reset(void *opaque) {
     shim_ctx *ctx = opaque;
     if (!ctx) return;
@@ -174,16 +181,18 @@ static const vcat_decoder_plugin g_descriptor = {
     .mime_type = VCAT_PLUGIN_MIME,
     .decoder_name = plugin_decoder_name,
     .version = plugin_version,
+    .manifest_json = plugin_manifest_json,
     .open = plugin_open,
     .send_data = plugin_send_data,
     .get_picture = plugin_get_picture,
     .release_picture = plugin_release_picture,
+    .end_of_stream = plugin_end_of_stream,
     .reset = plugin_reset,
     .close = plugin_close,
 };
 
-/* The plugin's only exported symbol. */
+/* The plugin's only exported symbol -- the same name in every plugin. */
 __attribute__((visibility("default")))
-const vcat_decoder_plugin *VCAT_ENTRY(void) {
+const vcat_decoder_plugin *vcat_plugin_entry(void) {
     return &g_descriptor;
 }

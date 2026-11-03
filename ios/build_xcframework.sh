@@ -1,28 +1,29 @@
 #!/bin/bash
 #
-# Builds the iOS output of this plugin: build/dist/<artifact>.xcframework, a single drop-in for
-# vcat-d-ios's decoder-plugins/ folder. The plugin manifest travels inside it, as
-# <artifact>.xcframework/vcat-plugin.json (the counterpart of the .aar's
-# assets/plugin-manifest.json). The Android output is built by Gradle
-# (`./gradlew dist`) and ignores this directory; this script ignores app/ and needs no Android
-# SDK or NDK.
+# Builds the iOS output of this plugin: build/dist/<artifact>.xcframework -- one dynamic library
+# (a device and a simulator build of the same framework), self-describing, ready to drop into
+# vcat-d-ios's decoder-plugins/ folder. The Android output is built by Gradle (`./gradlew dist`)
+# and ignores this directory; this script ignores app/ and needs no Android SDK or NDK.
 #
 # Everything plugin-specific comes from ../plugin.json, the same file Gradle reads for the pinned
-# dav1d ref. Steps, per platform slice (iphoneos, iphonesimulator; arm64):
+# dav1d ref. Per platform slice (iphoneos, iphonesimulator; arm64):
 #   1. build dav1d at the pinned ref as a static library (meson + ninja)
-#   2. compile native/vcat_plugin_dav1d.c with the namespace derived from plugin.json's id
-#   3. prelink shim + libdav1d.a into one object that exports only _<namespace>* (ld -r), so
-#      none of dav1d's own symbols are visible to the app or to other plugins
-#   4. verify with nm that nothing outside the namespace is exported
-# then wrap both slices in an XCFramework and write the plugin manifest into it.
+#   2. compile native/vcat_plugin_dav1d.c against a header generated from plugin.json, which
+#      carries the plugin identity and the manifest JSON (embedded in __TEXT,__vcat_manifest)
+#   3. link shim + libdav1d.a into the framework's dynamic library, exporting only
+#      _vcat_plugin_entry -- dav1d stays private to this library, and every plugin has its own
+#      symbol namespace anyway, so plugins can never collide
+#   4. verify the export and the embedded manifest
+# then wrap both slices in an XCFramework.
 #
-# Host prerequisites: Xcode, meson, ninja (`brew install meson ninja`).
+# Host prerequisites: Xcode (xcode-select pointing at it), meson, ninja (`brew install meson ninja`).
 #
 # Overrides:
 #   DAV1D_REF=<ref> / DAV1D_REMOTE=<url>   build a different dav1d than plugin.json pins
 #   DAV1D_SRC=<path>                       build from a local dav1d checkout
 #   VCAT_PLUGIN_API_DIR=<dir>              where vcat_decoder_plugin.h lives
 #                                          (default: ../vcat-d-ios/plugin-api next to this repo)
+#   IPHONEOS_DEPLOYMENT_TARGET=<ver>       minimum iOS version (default 17.0)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,14 +39,14 @@ LICENSE_TEXT="$(json license)"
 DAV1D_REF="${DAV1D_REF:-$(json source.ref)}"
 DAV1D_REMOTE="${DAV1D_REMOTE:-$(json source.remote)}"
 
-# Namespace from the id: "vcat.dav2d.st-arm" -> "vcatd_dav2d_st_arm_".
+# Framework name from the id: "vcat.dav2d.st-arm" -> "vcatd_dav2d_st_arm". Unique per plugin, so
+# two plugins never share a framework (or bundle id) inside the app.
 case "$PLUGIN_ID" in
     vcat.*) ;;
     *) echo "build_xcframework.sh: plugin id '$PLUGIN_ID' must start with 'vcat.'" >&2; exit 1 ;;
 esac
-NAMESPACE="vcatd_$(printf '%s' "${PLUGIN_ID#vcat.}" | tr '.-' '__')_"
-ENTRY_SYMBOL="${NAMESPACE}plugin_entry"
-LIB_NAME="lib${NAMESPACE}plugin.a"
+FW_NAME="vcatd_$(printf '%s' "${PLUGIN_ID#vcat.}" | tr '.-' '__')"
+BUNDLE_ID="com.roncatech.$PLUGIN_ID"
 
 API_DIR="${VCAT_PLUGIN_API_DIR:-$ROOT/../vcat-d-ios/plugin-api}"
 API_HEADER="$API_DIR/vcat_decoder_plugin.h"
@@ -58,12 +59,11 @@ command -v ninja >/dev/null 2>&1 || { echo "build_xcframework.sh: ninja not foun
 WORK="$ROOT/build/ios"
 DIST="$ROOT/build/dist"
 SRC_DIR="$WORK/dav1d-src"
+GEN_DIR="$WORK/generated"
 DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-17.0}"
-# Rebuild dav1d when the ref or its build flags change.
-STAMP_KEY="$DAV1D_REF fno-common"
-mkdir -p "$WORK" "$DIST"
+mkdir -p "$WORK" "$DIST" "$GEN_DIR"
 
-echo "== $PLUGIN_ID  namespace=$NAMESPACE  dav1d=$DAV1D_REF  api=v$API_VERSION"
+echo "== $PLUGIN_ID  framework=$FW_NAME  dav1d=$DAV1D_REF  api=v$API_VERSION"
 
 # --- dav1d source at the pinned ref ------------------------------------------------------------
 if [ -n "${DAV1D_SRC:-}" ]; then
@@ -77,18 +77,52 @@ else
     git -C "$SRC_DIR" checkout -f --detach FETCH_HEAD
 fi
 
+# --- manifest + identity header, generated from plugin.json ------------------------------------
+LINKER_FLAGS_JSON="$(plutil -extract linkerFlags json -o - "$PLUGIN_JSON")"
+MANIFEST="$GEN_DIR/vcat-plugin.json"
+cat > "$MANIFEST" <<EOF
+{
+  "id": "$PLUGIN_ID",
+  "mimeType": "$PLUGIN_MIME",
+  "apiVersion": $API_VERSION,
+  "framework": "$FW_NAME",
+  "bundleIdentifier": "$BUNDLE_ID",
+  "decoderNamePrefix": "$NAME_PREFIX",
+  "decoderSource": "dav1d $DAV1D_REF",
+  "linkerFlags": $LINKER_FLAGS_JSON,
+  "license": "$LICENSE_TEXT"
+}
+EOF
+plutil -extract id raw -o /dev/null "$MANIFEST" \
+    || { echo "build_xcframework.sh: generated manifest is not valid JSON" >&2; exit 1; }
+
+{
+    echo "/* Generated by ios/build_xcframework.sh from plugin.json -- do not edit. */"
+    echo "#pragma once"
+    echo "#define VCAT_PLUGIN_ID \"$PLUGIN_ID\""
+    echo "#define VCAT_PLUGIN_MIME \"$PLUGIN_MIME\""
+    echo "#define VCAT_DECODER_NAME_PREFIX \"$NAME_PREFIX\""
+    echo "/* The manifest, NUL-terminated, in its own section so tools can read it from the binary. */"
+    echo "__attribute__((used, section(\"__TEXT,__vcat_manifest\")))"
+    echo "static const char vcat_plugin_manifest[] = {"
+    { cat "$MANIFEST"; printf '\0'; } | xxd -i
+    echo "};"
+} > "$GEN_DIR/vcat_plugin_manifest.h"
+
 # --- one slice per platform --------------------------------------------------------------------
 build_slice() {
-    local platform="$1" sdk_path deploy_arg subsystem
+    local platform="$1" sdk_path deploy_arg subsystem supported_platform
     case "$platform" in
         iphoneos)
             sdk_path="$(xcrun --sdk iphoneos --show-sdk-path)"
             deploy_arg="-miphoneos-version-min=$DEPLOYMENT_TARGET"
-            subsystem="ios" ;;
+            subsystem="ios"
+            supported_platform="iPhoneOS" ;;
         iphonesimulator)
             sdk_path="$(xcrun --sdk iphonesimulator --show-sdk-path)"
             deploy_arg="-mios-simulator-version-min=$DEPLOYMENT_TARGET"
-            subsystem="ios-simulator" ;;
+            subsystem="ios-simulator"
+            supported_platform="iPhoneSimulator" ;;
     esac
 
     local slice="$WORK/$platform"
@@ -97,7 +131,7 @@ build_slice() {
     mkdir -p "$slice"
 
     # 1. dav1d, cached per platform by ref.
-    if [ -n "${DAV1D_SRC:-}" ] || [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$STAMP_KEY" ] \
+    if [ -n "${DAV1D_SRC:-}" ] || [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$DAV1D_REF" ] \
             || [ ! -f "$dav1d_install/lib/libdav1d.a" ]; then
         local cross="$slice/cross.meson"
         cat > "$cross" <<EOF
@@ -108,7 +142,7 @@ ar = 'ar'
 strip = 'strip'
 
 [built-in options]
-c_args = ['$deploy_arg', '-fno-common']
+c_args = ['$deploy_arg']
 cpp_args = ['$deploy_arg']
 c_link_args = ['$deploy_arg']
 cpp_link_args = ['$deploy_arg']
@@ -124,53 +158,65 @@ cpu_family = 'aarch64'
 cpu = 'aarch64'
 endian = 'little'
 EOF
-        # -fno-common (c_args above): dav1d has a few tentative definitions (dav1d_masks,
-        # dav1d_qm_tbl). As common symbols they survive the prelink's export list as globals,
-        # and identically named commons in two plugins would silently merge into one table.
         rm -rf "$dav1d_build" "$dav1d_install"
         meson setup "$dav1d_build" "$SRC_DIR" --cross-file="$cross" --buildtype=release \
             --default-library=static --prefix="$dav1d_install" \
             -Denable_tools=false -Denable_tests=false
         ninja -C "$dav1d_build"
         ninja -C "$dav1d_build" install
-        echo "$STAMP_KEY" > "$stamp"
+        echo "$DAV1D_REF" > "$stamp"
     fi
 
-    # 2. The shim, named by the namespace.
+    # 2. The shim.
     xcrun clang -arch arm64 -isysroot "$sdk_path" "$deploy_arg" -O2 -std=c11 -Wall -Wextra \
         -fvisibility=hidden \
-        -I "$dav1d_install/include" -I "$API_DIR" \
-        -DVCAT_NS="$NAMESPACE" \
-        -DVCAT_PLUGIN_ID="\"$PLUGIN_ID\"" \
-        -DVCAT_PLUGIN_MIME="\"$PLUGIN_MIME\"" \
-        -DVCAT_DECODER_NAME_PREFIX="\"$NAME_PREFIX\"" \
+        -I "$dav1d_install/include" -I "$API_DIR" -I "$GEN_DIR" \
         -c "$ROOT/native/vcat_plugin_dav1d.c" -o "$slice/shim.o"
 
-    # 3. Prelink behind the namespace.
-    echo "_${NAMESPACE}*" > "$slice/exported_symbols.txt"
-    xcrun ld -r -arch arm64 "$slice/shim.o" "$dav1d_install/lib/libdav1d.a" \
-        -exported_symbols_list "$slice/exported_symbols.txt" -o "$slice/plugin.o"
-    rm -f "$slice/$LIB_NAME"
-    xcrun libtool -static -o "$slice/$LIB_NAME" "$slice/plugin.o" 2>/dev/null
+    # 3. The framework: dynamic library + Info.plist.
+    local fw="$slice/$FW_NAME.framework"
+    rm -rf "$fw"
+    mkdir -p "$fw"
+    xcrun clang -dynamiclib -arch arm64 -isysroot "$sdk_path" "$deploy_arg" \
+        -install_name "@rpath/$FW_NAME.framework/$FW_NAME" \
+        -Wl,-exported_symbol,_vcat_plugin_entry -Wl,-dead_strip \
+        "$slice/shim.o" "$dav1d_install/lib/libdav1d.a" \
+        -o "$fw/$FW_NAME"
 
-    # 4. Nothing outside the namespace may be exported.
-    local leaked
-    leaked="$(nm -gUj "$slice/$LIB_NAME" | grep -v -e '^$' -e ':$' | grep -v "^_${NAMESPACE}" || true)"
-    if [ -n "$leaked" ]; then
-        echo "build_xcframework.sh: $platform slice exports symbols outside _${NAMESPACE}*:" >&2
-        echo "$leaked" >&2
+    local short_version="${DAV1D_REF#v}"
+    cat > "$fw/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>$FW_NAME</string>
+    <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>$FW_NAME</string>
+    <key>CFBundlePackageType</key><string>FMWK</string>
+    <key>CFBundleShortVersionString</key><string>$short_version</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleSupportedPlatforms</key><array><string>$supported_platform</string></array>
+    <key>MinimumOSVersion</key><string>$DEPLOYMENT_TARGET</string>
+    <key>VCATDecoderPlugin</key><true/>
+</dict>
+</plist>
+EOF
+
+    # 4. Verify: exactly one export, and the manifest is readable from the binary.
+    local exports
+    exports="$(nm -gUj "$fw/$FW_NAME" | sed '/^$/d')"
+    if [ "$exports" != "_vcat_plugin_entry" ]; then
+        echo "build_xcframework.sh: $platform library must export only _vcat_plugin_entry, got:" >&2
+        echo "$exports" >&2
         exit 1
     fi
-    echo "== $platform: exports $(nm -gUj "$slice/$LIB_NAME" | grep "^_${NAMESPACE}" | tr '\n' ' ')"
-
-    # Public header: declares the entry point only, so the app needs nothing from dav1d.
-    mkdir -p "$slice/Headers"
-    cat > "$slice/Headers/${NAMESPACE}plugin.h" <<EOF
-/* Generated by ios/build_xcframework.sh for $PLUGIN_ID. See vcat_decoder_plugin.h. */
-#pragma once
-struct vcat_decoder_plugin;
-const struct vcat_decoder_plugin *${ENTRY_SYMBOL}(void);
-EOF
+    # segedit extracts the raw section bytes (otool -s prints words in target byte order).
+    xcrun segedit "$fw/$FW_NAME" -extract __TEXT __vcat_manifest "$slice/manifest.bin"
+    tr -d '\0' < "$slice/manifest.bin" | cmp -s - "$MANIFEST" \
+        || { echo "build_xcframework.sh: $platform library's embedded manifest doesn't match" >&2; exit 1; }
+    echo "== $platform: $FW_NAME.framework exports _vcat_plugin_entry, manifest embedded"
 }
 
 build_slice iphoneos
@@ -180,24 +226,8 @@ build_slice iphonesimulator
 XCF="$DIST/$ARTIFACT.xcframework"
 rm -rf "$XCF"
 xcodebuild -create-xcframework \
-    -library "$WORK/iphoneos/$LIB_NAME" -headers "$WORK/iphoneos/Headers" \
-    -library "$WORK/iphonesimulator/$LIB_NAME" -headers "$WORK/iphonesimulator/Headers" \
+    -framework "$WORK/iphoneos/$FW_NAME.framework" \
+    -framework "$WORK/iphonesimulator/$FW_NAME.framework" \
     -output "$XCF" >/dev/null
 
-# Manifest, inside the XCFramework: what the app's pickup script needs to link and register
-# the plugin. Xcode ignores extra top-level files in an XCFramework.
-LINKER_FLAGS="$(plutil -extract linkerFlags json -o - "$PLUGIN_JSON")"
-cat > "$XCF/vcat-plugin.json" <<EOF
-{
-  "id": "$PLUGIN_ID",
-  "namespace": "$NAMESPACE",
-  "mimeType": "$PLUGIN_MIME",
-  "entrySymbol": "$ENTRY_SYMBOL",
-  "apiVersion": $API_VERSION,
-  "linkerFlags": $LINKER_FLAGS,
-  "decoderSource": "dav1d $DAV1D_REF",
-  "license": "$LICENSE_TEXT"
-}
-EOF
-
-echo "== built $XCF (manifest: vcat-plugin.json inside)"
+echo "== built $XCF"

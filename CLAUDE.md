@@ -38,21 +38,28 @@ The `dist` task injects `classes.dex` into the AAR (required for host DexClassLo
 - **`app/src/main/cpp/dav1d_jni.cc`** — JNI implementation over dav1d.
 
 - **`native/vcat_plugin_dav1d.c`** (iOS) — implements vcat-d-ios's plugin C ABI
-  (`plugin-api/vcat_decoder_plugin.h`) over dav1d. Contains no plugin name: the namespace, id,
-  MIME type and decoder-name prefix come from `plugin.json` through `-D` flags, so a fork's plugin
-  can reuse it unchanged. Mirrors `dav1d_jni.cc` behavior (default settings, `max_frame_delay`
-  untouched, version truncated at '-', `decoder_name` = `vcat-dav1d-<version>`).
-- **`ios/build_xcframework.sh`** — per slice: dav1d (meson, `-fno-common`), shim, then
-  `ld -r -exported_symbols_list '_vcatd_dav1d_*'` so only `vcatd_dav1d_plugin_entry` is exported;
-  `nm` check; XCFramework with `vcat-plugin.json` inside.
+  (`plugin-api/vcat_decoder_plugin.h`, API v2) over dav1d, exporting `vcat_plugin_entry`.
+  Contains no plugin name: id, MIME type, decoder-name prefix and the manifest come from
+  `plugin.json` through the generated `vcat_plugin_manifest.h`, so a fork's plugin can reuse it
+  unchanged. Mirrors `dav1d_jni.cc` behavior (default settings, `max_frame_delay` untouched,
+  version truncated at '-', `decoder_name` = `vcat-dav1d-<version>`). `end_of_stream` is a no-op:
+  dav1d drains via `dav1d_get_picture` on its own.
+- **`ios/build_xcframework.sh`** — per slice: dav1d (meson, static), generated identity/manifest
+  header, glue, then one dynamic library `vcatd_dav1d.framework` exporting only
+  `_vcat_plugin_entry`, with the manifest in `__TEXT,__vcat_manifest` and `VCATDecoderPlugin` in
+  its Info.plist; `nm` + `segedit` checks; XCFramework.
 
 ## Key Design Decisions
 
-- **iOS namespace isolation.** All iOS plugins link into one app binary, so a plugin may export
-  only `_<namespace>*` (namespace from the id: `vcat.dav1d` → `vcatd_dav1d_`). dav1d is built
-  with `-fno-common` because its tentative definitions (`dav1d_masks`, `dav1d_qm_tbl`) otherwise
-  become common symbols, which the export list does not hide and which would silently merge with
-  another plugin's. Xcode 27's ld dropped `-d`, so this has to happen at compile time.
+- **iOS plugins are dynamic libraries.** Each has its own symbol namespace, so plugins can't
+  collide even when two wrap the same decoder, and nothing needs hiding or renaming. (An earlier
+  static-library design had to prelink with an export list and build dav1d with `-fno-common`
+  for its common symbols; both are gone.) The one exported name, `vcat_plugin_entry`, is the same
+  in every plugin -- the app looks it up per library. The framework name and bundle id come from
+  the id (`vcat.dav1d` → `vcatd_dav1d`, `com.roncatech.vcat.dav1d`).
+- **Self-describing.** The manifest is compiled in once, from one generated header: returned by
+  `manifest_json()` and placed in `__TEXT,__vcat_manifest`. Read raw bytes with
+  `segedit -extract`; `otool -s` prints that section as target-endian 32-bit words.
 
 - ExoPlayer 2.x (2.19.1); `decoder-plugin-api` and `exoplayer-core` are `compileOnly`.
 - Package is `com.roncatech.vcatd_dav1d_decoder` (moved out of the dead `com.roncatech.libvcat.*`
