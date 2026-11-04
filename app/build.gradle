@@ -11,7 +11,8 @@ plugins {
 }
 
 group   = 'com.roncatech.vcat'
-version = '0.0.1'
+// Plugin version: single source in ../plugin.json, shared with the iOS build.
+version = new groovy.json.JsonSlurper().parse(rootProject.file('plugin.json')).version
 
 def dav1dAbis = ['arm64-v8a', 'armeabi-v7a']
 def minApi    = 29

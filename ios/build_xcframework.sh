@@ -32,6 +32,7 @@ PLUGIN_JSON="$ROOT/plugin.json"
 json() { plutil -extract "$1" raw -o - "$PLUGIN_JSON"; }
 
 PLUGIN_ID="$(json id)"
+PLUGIN_VERSION="$(json version)"
 PLUGIN_MIME="$(json mimeType)"
 NAME_PREFIX="$(json decoderNamePrefix)"
 ARTIFACT="$(json artifact)"
@@ -63,7 +64,7 @@ GEN_DIR="$WORK/generated"
 DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-17.0}"
 mkdir -p "$WORK" "$DIST" "$GEN_DIR"
 
-echo "== $PLUGIN_ID  framework=$FW_NAME  dav1d=$DAV1D_REF  api=v$API_VERSION"
+echo "== $PLUGIN_ID $PLUGIN_VERSION  framework=$FW_NAME  dav1d=$DAV1D_REF  api=v$API_VERSION"
 
 # --- dav1d source at the pinned ref ------------------------------------------------------------
 if [ -n "${DAV1D_SRC:-}" ]; then
@@ -83,6 +84,7 @@ MANIFEST="$GEN_DIR/vcat-plugin.json"
 cat > "$MANIFEST" <<EOF
 {
   "id": "$PLUGIN_ID",
+  "version": "$PLUGIN_VERSION",
   "mimeType": "$PLUGIN_MIME",
   "apiVersion": $API_VERSION,
   "framework": "$FW_NAME",
@@ -183,7 +185,6 @@ EOF
         "$slice/shim.o" "$dav1d_install/lib/libdav1d.a" \
         -o "$fw/$FW_NAME"
 
-    local short_version="${DAV1D_REF#v}"
     cat > "$fw/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -195,8 +196,8 @@ EOF
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>$FW_NAME</string>
     <key>CFBundlePackageType</key><string>FMWK</string>
-    <key>CFBundleShortVersionString</key><string>$short_version</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>$PLUGIN_VERSION</string>
+    <key>CFBundleVersion</key><string>$PLUGIN_VERSION</string>
     <key>CFBundleSupportedPlatforms</key><array><string>$supported_platform</string></array>
     <key>MinimumOSVersion</key><string>$DEPLOYMENT_TARGET</string>
     <key>VCATDecoderPlugin</key><true/>

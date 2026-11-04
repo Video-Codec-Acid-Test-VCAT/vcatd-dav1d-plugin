@@ -4,6 +4,27 @@ Running summary of notable changes to `vcatd-dav1d-plugin`, newest first.
 
 ---
 
+## 2026-11-03 — Version 0.1.0, from one place
+
+The plugin version moves from 0.0.1 to **0.1.0**, for the first release that builds for both
+platforms. It now lives in `plugin.json` (`version`), the same file that already holds the id
+and the pinned decoder source:
+- **Android:** `app/build.gradle` reads it (`version`, which is also the Maven publication
+  version). It used to be a hard-coded `'0.0.1'`.
+- **iOS:** `ios/build_xcframework.sh` writes it into the framework's `CFBundleShortVersionString`
+  and `CFBundleVersion`, and adds `"version"` to the embedded manifest. Previously the framework
+  carried the *decoder's* version there and had no plugin version at all.
+
+Verified: Gradle reports `version: 0.1.0` for the plugin project, and `./gradlew dist` builds.
+The rebuilt XCFramework's `Info.plist` and embedded manifest both say 0.1.0. vcat-d-ios validates
+it and its plugin tests pass with it embedded (13/13).
+
+### Commits
+
+Branch `vcatd-ios-plugin-model` (this commit).
+
+---
+
 ## 2026-11-03 — iOS output is now a self-describing dynamic library
 
 The iOS plugin changed from a prelinked static library to **one dynamic library**,

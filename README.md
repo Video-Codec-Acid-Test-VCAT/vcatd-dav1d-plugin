@@ -18,6 +18,13 @@ directories. Build instructions: [Android](#android), [iOS](#ios).
 | Decoder glue | JNI (`app/src/main/cpp/dav1d_jni.cc`) | C ABI glue (`native/vcat_plugin_dav1d.c`) |
 | Form | `.aar`, loaded at app startup | dynamic library, embedded at app build, loaded at app launch |
 
+## Plugin version
+
+The plugin's own version (**0.1.0**) lives in `plugin.json` (`version`), separate from the
+decoder library's version. Gradle uses it as the library/Maven version. The iOS build writes it
+into the framework's `CFBundleShortVersionString` / `CFBundleVersion` and into the embedded
+manifest. Bump it there once, and both platforms carry the same number.
+
 ## Pinned dav1d source
 
 dav1d is **built from source**, not bundled. Both builds clone it at the release pinned in
